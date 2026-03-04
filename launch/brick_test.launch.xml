@@ -1,0 +1,17 @@
+<!-- Brick test launch: drives straight + safety controller.
+     Drive straight publishes to /vesc/input/navigation.
+     Safety controller monitors /scan and publishes speed=0 to
+     /vesc/low_level/input/safety (higher mux priority) when obstacle detected.
+
+     Usage:
+       ros2 launch safety_controller brick_test.launch.xml
+-->
+<launch>
+  <node pkg="safety_controller" name="drive_straight" exec="drive_straight" output="screen">
+    <param from="$(find-pkg-share safety_controller)/params.yaml"/>
+  </node>
+
+  <node pkg="safety_controller" name="safety_controller" exec="safety_controller" output="screen">
+    <param from="$(find-pkg-share safety_controller)/params.yaml"/>
+  </node>
+</launch>
