@@ -13,7 +13,7 @@ safety_controller:
     assumed_speed: 1.0
 
     # Stop if TTC < this threshold (seconds).
-    ttc_threshold: 1
+    ttc_threshold: .3
 
     # Half-angle of the forward safety cone (degrees).
     cone_half_angle_deg: 25.0
