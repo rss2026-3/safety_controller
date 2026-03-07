@@ -12,6 +12,8 @@ class SafetyController(Node):
     an obstacle is within the TTC threshold. Stays silent when safe — the mux
     then lets the lower-priority navigation command through.
 
+    effective_ttc_threshold = ttc_base + ttc_gain * assumed_speed
+
     Real car topics:
       scan_topic:  /scan
       drive_topic: /vesc/low_level/input/safety
@@ -26,21 +28,25 @@ class SafetyController(Node):
 
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("drive_topic", "/vesc/low_level/input/safety")
-        self.declare_parameter("ttc_threshold", 0.3)       # seconds
-        self.declare_parameter("assumed_speed", 1.0)       # m/s — used for TTC when speed unknown
+        self.declare_parameter("ttc_base", 0.3)
+        self.declare_parameter("ttc_gain", 0.35)
+        self.declare_parameter("assumed_speed", 1.0)
         self.declare_parameter("cone_half_angle_deg", 25.0)
-        self.declare_parameter("car_half_width", 0.25)     # meters
-        self.declare_parameter("safe_scan_count", 3)       # hysteresis
+        self.declare_parameter("car_half_width", 0.25)
+        self.declare_parameter("safe_scan_count", 3)
 
         self.SCAN_TOPIC = self.get_parameter("scan_topic").get_parameter_value().string_value
         self.DRIVE_TOPIC = self.get_parameter("drive_topic").get_parameter_value().string_value
-        self.TTC_THRESHOLD = self.get_parameter("ttc_threshold").get_parameter_value().double_value
+        self.TTC_BASE = self.get_parameter("ttc_base").get_parameter_value().double_value
+        self.TTC_GAIN = self.get_parameter("ttc_gain").get_parameter_value().double_value
         self.ASSUMED_SPEED = self.get_parameter("assumed_speed").get_parameter_value().double_value
         self.CONE_HALF_ANGLE = np.deg2rad(
             self.get_parameter("cone_half_angle_deg").get_parameter_value().double_value
         )
         self.CAR_HALF_WIDTH = self.get_parameter("car_half_width").get_parameter_value().double_value
         self.SAFE_SCAN_COUNT = self.get_parameter("safe_scan_count").get_parameter_value().integer_value
+
+        self.TTC_THRESHOLD = self.TTC_BASE + self.TTC_GAIN * self.ASSUMED_SPEED
 
         self.is_stopped = False
         self.consecutive_safe_scans = 0
@@ -54,13 +60,14 @@ class SafetyController(Node):
 
         self.get_logger().info(
             f"SafetyController: scan={self.SCAN_TOPIC}, output={self.DRIVE_TOPIC} | "
-            f"TTC<{self.TTC_THRESHOLD}s @ {self.ASSUMED_SPEED}m/s, "
+            f"assumed_speed={self.ASSUMED_SPEED}m/s, "
+            f"effective_ttc={self.TTC_BASE}+{self.TTC_GAIN}x{self.ASSUMED_SPEED}="
+            f"{self.TTC_THRESHOLD:.3f}s, "
             f"cone=±{np.rad2deg(self.CONE_HALF_ANGLE):.0f}°, "
-            f"car_half_width={self.CAR_HALF_WIDTH}m, hysteresis={self.SAFE_SCAN_COUNT} scans"
+            f"car_half_width={self.CAR_HALF_WIDTH}m"
         )
 
     def _median_filter(self, ranges, window=3):
-        """Sliding-window median, ignoring inf so noise spikes don't corrupt neighbors."""
         n = len(ranges)
         filtered = np.empty(n, dtype=np.float32)
         for i in range(n):
@@ -73,24 +80,21 @@ class SafetyController(Node):
 
     def scan_callback(self, scan_msg: LaserScan):
         ranges = np.array(scan_msg.ranges, dtype=np.float32)
-        ranges = np.where(np.isnan(ranges), np.inf, ranges)   # nan → safe (no return)
-        ranges = np.where(ranges < 0.05, np.inf, ranges)      # sensor noise floor → safe
+        ranges = np.where(np.isnan(ranges), np.inf, ranges)
+        ranges = np.where(ranges < 0.05, np.inf, ranges)
         ranges = self._median_filter(ranges, window=3)
 
         angle_min = scan_msg.angle_min
         angle_inc = scan_msg.angle_increment
         angles = angle_min + np.arange(len(ranges)) * angle_inc
 
-        # Forward cone
         cone_mask = (angles >= -self.CONE_HALF_ANGLE) & (angles <= self.CONE_HALF_ANGLE)
         cone_ranges = ranges[cone_mask]
         cone_angles = angles[cone_mask]
 
-        # Project onto car axes
         forward_dist = cone_ranges * np.cos(cone_angles)
         lateral_dist = np.abs(cone_ranges * np.sin(cone_angles))
 
-        # Only beams that pass through the car's body width matter
         valid = (
             (lateral_dist < self.CAR_HALF_WIDTH)
             & np.isfinite(cone_ranges)
@@ -105,11 +109,10 @@ class SafetyController(Node):
                 danger_detected = True
                 self.get_logger().warn(
                     f"SAFETY STOP: obstacle at {min_forward:.2f}m, "
-                    f"TTC={ttc:.2f}s < {self.TTC_THRESHOLD}s",
+                    f"TTC={ttc:.2f}s < {self.TTC_THRESHOLD:.2f}s",
                     throttle_duration_sec=0.5,
                 )
 
-        # Update hysteresis state
         if danger_detected:
             self.consecutive_safe_scans = 0
             self.is_stopped = True
@@ -119,7 +122,6 @@ class SafetyController(Node):
                 self.is_stopped = False
                 self.get_logger().info("Safety released — path clear.")
 
-        # Publish stop only when needed; silence = mux falls through to navigation
         if self.is_stopped:
             stop = AckermannDriveStamped()
             stop.drive.speed = 0.0

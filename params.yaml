@@ -2,26 +2,20 @@ safety_controller:
   ros__parameters:
     scan_topic: "/scan"
 
-    # Where the safety controller publishes stop commands.
     # Real car (mux low-level safety input — overrides navigation):
     drive_topic: "/vesc/low_level/input/safety"
     # Simulation (uncomment, comment out real car line above):
     # drive_topic: "/drive"
 
-    # Speed assumed for TTC calculation (m/s).
-    # Set this to match whatever drive_straight.py is publishing.
+    # effective_ttc_threshold = ttc_base + ttc_gain * assumed_speed
+    ttc_base: 0.3
+    ttc_gain: 0.35
+
+    # !! CHANGE SPEED HERE — set this to match whatever speed the car is driving !!
     assumed_speed: 1.0
 
-    # Stop if TTC < this threshold (seconds).
-    ttc_threshold: 1
-
-    # Half-angle of the forward safety cone (degrees).
     cone_half_angle_deg: 25.0
-
-    # Half-width of the car body (meters).
     car_half_width: 0.25
-
-    # Consecutive threat-free scans required before releasing stop.
     safe_scan_count: 3
 
 drive_straight:
@@ -30,5 +24,7 @@ drive_straight:
     drive_topic: "/vesc/input/navigation"
     # Simulation (uncomment, comment out real car line above):
     # drive_topic: "/drive"
-    speed: 0.625
+
+    # !! CHANGE SPEED HERE !!
+    speed: 1.0
     steering_angle: 0.0
