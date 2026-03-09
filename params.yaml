@@ -9,7 +9,7 @@ safety_controller:
 
     # effective_ttc_threshold = ttc_base + ttc_gain * assumed_speed
     ttc_base: 0.3
-    ttc_gain: 0.35
+    ttc_gain: 0.38
 
     cone_half_angle_deg: 25.0
     car_half_width: 0.25
@@ -23,5 +23,5 @@ drive_straight:
     # drive_topic: "/drive"
 
     # !! CHANGE SPEED HERE !!
-    speed: 1.0
+    speed: 1.4
     steering_angle: 0.0
