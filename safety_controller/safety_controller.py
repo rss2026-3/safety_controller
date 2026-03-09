@@ -4,6 +4,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from ackermann_msgs.msg import AckermannDriveStamped
+from std_msgs.msg import Float32, Bool
 
 
 class SafetyController(Node):
@@ -12,7 +13,7 @@ class SafetyController(Node):
     an obstacle is within the TTC threshold. Stays silent when safe — the mux
     then lets the lower-priority navigation command through.
 
-    effective_ttc_threshold = ttc_base + ttc_gain * assumed_speed
+    effective_ttc_threshold = ttc_base + ttc_gain * actual_speed
 
     Real car topics:
       scan_topic:  /scan
@@ -30,7 +31,6 @@ class SafetyController(Node):
         self.declare_parameter("drive_topic", "/vesc/low_level/input/safety")
         self.declare_parameter("ttc_base", 0.3)
         self.declare_parameter("ttc_gain", 0.35)
-        self.declare_parameter("assumed_speed", 1.0)
         self.declare_parameter("cone_half_angle_deg", 25.0)
         self.declare_parameter("car_half_width", 0.25)
         self.declare_parameter("safe_scan_count", 3)
@@ -39,14 +39,15 @@ class SafetyController(Node):
         self.DRIVE_TOPIC = self.get_parameter("drive_topic").get_parameter_value().string_value
         self.TTC_BASE = self.get_parameter("ttc_base").get_parameter_value().double_value
         self.TTC_GAIN = self.get_parameter("ttc_gain").get_parameter_value().double_value
-        self.ASSUMED_SPEED = self.get_parameter("assumed_speed").get_parameter_value().double_value
         self.CONE_HALF_ANGLE = np.deg2rad(
             self.get_parameter("cone_half_angle_deg").get_parameter_value().double_value
         )
         self.CAR_HALF_WIDTH = self.get_parameter("car_half_width").get_parameter_value().double_value
         self.SAFE_SCAN_COUNT = self.get_parameter("safe_scan_count").get_parameter_value().integer_value
 
-        self.TTC_THRESHOLD = self.TTC_BASE + self.TTC_GAIN * self.ASSUMED_SPEED
+        self.current_speed = 0.0
+
+        # self.TTC_THRESHOLD = self.TTC_BASE + self.TTC_GAIN * self.current_speed
 
         self.is_stopped = False
         self.consecutive_safe_scans = 0
@@ -57,12 +58,19 @@ class SafetyController(Node):
         self.drive_pub = self.create_publisher(
             AckermannDriveStamped, self.DRIVE_TOPIC, 1
         )
+        self.cmd_sub = self.create_subscription(
+            AckermannDriveStamped,
+            "/vesc/low_level/ackermann_cmd",
+            self.cmd_callback,
+            10
+        )
+
+        #extra publishers fro visualization
+        self.ttc_pub = self.create_publisher(Float32, "/safety/ttc", 10)
+        self.ttc_trigger_pub = self.create_publisher(Bool, "/safety/ttc_triggered", 10)
 
         self.get_logger().info(
             f"SafetyController: scan={self.SCAN_TOPIC}, output={self.DRIVE_TOPIC} | "
-            f"assumed_speed={self.ASSUMED_SPEED}m/s, "
-            f"effective_ttc={self.TTC_BASE}+{self.TTC_GAIN}x{self.ASSUMED_SPEED}="
-            f"{self.TTC_THRESHOLD:.3f}s, "
             f"cone=±{np.rad2deg(self.CONE_HALF_ANGLE):.0f}°, "
             f"car_half_width={self.CAR_HALF_WIDTH}m"
         )
@@ -77,6 +85,9 @@ class SafetyController(Node):
             finite_vals = chunk[np.isfinite(chunk)]
             filtered[i] = float(np.median(finite_vals)) if len(finite_vals) > 0 else np.inf
         return filtered
+    
+    def cmd_callback(self, msg: AckermannDriveStamped):
+        self.current_speed = msg.drive.speed
 
     def scan_callback(self, scan_msg: LaserScan):
         ranges = np.array(scan_msg.ranges, dtype=np.float32)
@@ -101,17 +112,28 @@ class SafetyController(Node):
             & (forward_dist > 0.0)
         )
 
+        current_ttc = float("inf")
+        ttc_threshold = self.TTC_BASE + self.TTC_GAIN * abs(self.current_speed)
         danger_detected = False
         if np.any(valid):
             min_forward = float(np.min(forward_dist[valid]))
-            ttc = min_forward / max(self.ASSUMED_SPEED, 0.01)
-            if ttc < self.TTC_THRESHOLD:
+            ttc = min_forward / max(abs(self.current_speed), 0.01)
+            if ttc < ttc_threshold:
                 danger_detected = True
                 self.get_logger().warn(
                     f"SAFETY STOP: obstacle at {min_forward:.2f}m, "
-                    f"TTC={ttc:.2f}s < {self.TTC_THRESHOLD:.2f}s",
+                    f"TTC={ttc:.2f}s < {ttc_threshold:.2f}s",
                     throttle_duration_sec=0.5,
                 )
+            current_ttc = ttc
+
+        ttc_msg = Float32()
+        ttc_msg.data = current_ttc if np.isfinite(current_ttc) else -1.0
+        self.ttc_pub.publish(ttc_msg)
+
+        trigger_msg = Bool()
+        trigger_msg.data = danger_detected
+        self.ttc_trigger_pub.publish(trigger_msg)
 
         if danger_detected:
             self.consecutive_safe_scans = 0

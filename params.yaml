@@ -11,9 +11,6 @@ safety_controller:
     ttc_base: 0.3
     ttc_gain: 0.35
 
-    # !! CHANGE SPEED HERE — set this to match whatever speed the car is driving !!
-    assumed_speed: 1.0
-
     cone_half_angle_deg: 25.0
     car_half_width: 0.25
     safe_scan_count: 3
