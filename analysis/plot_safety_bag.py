@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-import rosbag2_py
-from rclpy.serialization import deserialize_message
-from rosidl_runtime_py.utilities import get_message
+from pathlib import Path
+from rosbags.highlevel import AnyReader
+from rosbags.typesys import Stores, get_typestore, get_types_from_msg
 
 
 DEFAULT_SPEED_TOPIC = "/vesc/low_level/ackermann_cmd"
@@ -16,51 +15,59 @@ DEFAULT_TRIGGER_TOPIC = "/safety/ttc_triggered"
 DEFAULT_TTC_TOPIC = "/safety/ttc"
 
 
+ACKERMANN_DRIVE_MSG = """
+float32 steering_angle
+float32 steering_angle_velocity
+float32 speed
+float32 acceleration
+float32 jerk
+"""
+
+ACKERMANN_DRIVE_STAMPED_MSG = """
+std_msgs/Header header
+ackermann_msgs/AckermannDrive drive
+"""
+
+
 def read_bag_topics(bag_path, topics_of_interest):
     """
-    Read selected topics from a ROS 2 bag.
+    Read selected topics from a ROS 2 bag without ROS installed.
 
     Returns:
         data: dict mapping topic -> list of (timestamp_sec, deserialized_msg)
     """
-    if not os.path.exists(bag_path):
+    bagpath = Path(bag_path)
+
+    if not bagpath.exists():
         raise FileNotFoundError(f"Bag path does not exist: {bag_path}")
-
-    storage_options = rosbag2_py.StorageOptions(uri=bag_path, storage_id="sqlite3")
-    converter_options = rosbag2_py.ConverterOptions(
-        input_serialization_format="cdr",
-        output_serialization_format="cdr",
-    )
-
-    reader = rosbag2_py.SequentialReader()
-    reader.open(storage_options, converter_options)
-
-    topic_types = reader.get_all_topics_and_types()
-    type_map = {topic.name: topic.type for topic in topic_types}
-
-    missing = [topic for topic in topics_of_interest if topic not in type_map]
-    if missing:
-        print("Warning: these topics were not found in the bag:")
-        for topic in missing:
-            print(f"  {topic}")
-
-    msg_type_map = {
-        topic: get_message(type_map[topic])
-        for topic in topics_of_interest
-        if topic in type_map
-    }
 
     data = {topic: [] for topic in topics_of_interest}
 
-    while reader.has_next():
-        topic, raw_data, timestamp_ns = reader.read_next()
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
 
-        if topic not in msg_type_map:
-            continue
+    typestore.register(get_types_from_msg(
+        ACKERMANN_DRIVE_MSG,
+        'ackermann_msgs/msg/AckermannDrive',
+    ))
+    typestore.register(get_types_from_msg(
+        ACKERMANN_DRIVE_STAMPED_MSG,
+        'ackermann_msgs/msg/AckermannDriveStamped',
+    ))
 
-        msg = deserialize_message(raw_data, msg_type_map[topic])
-        timestamp_sec = timestamp_ns * 1e-9
-        data[topic].append((timestamp_sec, msg))
+    with AnyReader([bagpath], default_typestore=typestore) as reader:
+        connections = [c for c in reader.connections if c.topic in topics_of_interest]
+
+        found_topics = {c.topic for c in connections}
+        missing = [topic for topic in topics_of_interest if topic not in found_topics]
+        if missing:
+            print("Warning: these topics were not found in the bag:")
+            for topic in missing:
+                print(f"  {topic}")
+
+        for connection, timestamp_ns, rawdata in reader.messages(connections=connections):
+            msg = reader.deserialize(rawdata, connection.msgtype)
+            timestamp_sec = timestamp_ns * 1e-9
+            data[connection.topic].append((timestamp_sec, msg))
 
     return data
 
@@ -187,7 +194,7 @@ def main():
     fig, ax1 = plt.subplots(figsize=(10, 5))
 
     # Speed trace
-    ax1.plot(speed_t, speed_v, label="Commanded speed")
+    ax1.plot(speed_t, speed_v, color='blue', label="Commanded speed")
     ax1.set_xlabel("Time (s)")
     ax1.set_ylabel("Speed (m/s)")
     ax1.set_title("Speed vs Time with TTC Activation")
@@ -196,15 +203,15 @@ def main():
     first_line = True
     for t in activation_times:
         if first_line:
-            ax1.axvline(t, linestyle="--", label="TTC activated")
+            ax1.axvline(t, linestyle="--", color='green', label="TTC activated")
             first_line = False
         else:
-            ax1.axvline(t, linestyle="--")
+            ax1.axvline(t, linestyle="--", color='green')
 
     # Optional TTC trace on second axis
     if len(ttc_t) > 0:
         ax2 = ax1.twinx()
-        ax2.plot(ttc_t, ttc_vals, alpha=0.7, label="TTC")
+        ax2.plot(ttc_t, ttc_vals, color='red', alpha=0.7, label="TTC")
         ax2.set_ylabel("TTC (s)")
 
         # Combine legends from both axes

@@ -34,6 +34,7 @@ class SafetyController(Node):
         self.declare_parameter("cone_half_angle_deg", 25.0)
         self.declare_parameter("car_half_width", 0.25)
         self.declare_parameter("safe_scan_count", 3)
+        self.declare_parameter("min_stop_distance", 0.35)
 
         self.SCAN_TOPIC = self.get_parameter("scan_topic").get_parameter_value().string_value
         self.DRIVE_TOPIC = self.get_parameter("drive_topic").get_parameter_value().string_value
@@ -44,10 +45,11 @@ class SafetyController(Node):
         )
         self.CAR_HALF_WIDTH = self.get_parameter("car_half_width").get_parameter_value().double_value
         self.SAFE_SCAN_COUNT = self.get_parameter("safe_scan_count").get_parameter_value().integer_value
+        self.MIN_STOP_DISTANCE = self.get_parameter("min_stop_distance").get_parameter_value().double_value
+
 
         self.current_speed = 0.0
-
-        # self.TTC_THRESHOLD = self.TTC_BASE + self.TTC_GAIN * self.current_speed
+        self.danger_count = 0
 
         self.is_stopped = False
         self.consecutive_safe_scans = 0
@@ -116,15 +118,29 @@ class SafetyController(Node):
         ttc_threshold = self.TTC_BASE + self.TTC_GAIN * abs(self.current_speed)
         danger_detected = False
         if np.any(valid):
-            min_forward = float(np.min(forward_dist[valid]))
+            # min_forward = float(np.min(forward_dist[valid]))
+            close_points = np.sort(forward_dist[valid])
+            min_forward = float(np.median(close_points[:5]))
             ttc = min_forward / max(abs(self.current_speed), 0.01)
-            if ttc < ttc_threshold:
+            if min_forward < self.MIN_STOP_DISTANCE:
                 danger_detected = True
+                self.danger_count = 0
                 self.get_logger().warn(
                     f"SAFETY STOP: obstacle at {min_forward:.2f}m, "
                     f"TTC={ttc:.2f}s < {ttc_threshold:.2f}s",
                     throttle_duration_sec=0.5,
                 )
+            elif ttc < ttc_threshold:
+                self.danger_count+=1
+                if self.danger_count == 2:
+                    danger_detected = True
+                    self.danger_count = 0
+                self.get_logger().warn(
+                    f"SAFETY STOP: obstacle at {min_forward:.2f}m, "
+                    f"TTC={ttc:.2f}s < {ttc_threshold:.2f}s",
+                    throttle_duration_sec=0.5,
+                )
+            else: self.danger_count = 0
             current_ttc = ttc
 
         ttc_msg = Float32()

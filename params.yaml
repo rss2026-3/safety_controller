@@ -14,6 +14,7 @@ safety_controller:
     cone_half_angle_deg: 25.0
     car_half_width: 0.25
     safe_scan_count: 3
+    min_stop_distance: 0.35
 
 drive_straight:
   ros__parameters:
